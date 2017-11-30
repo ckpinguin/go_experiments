@@ -21,8 +21,10 @@ type Fetcher interface {
 // See http://golang.org/ref/spec#Struct_types section on embedded types.type Cache struct {
 var fetched = struct {
 	m map[string]error
-	sync.Mutex
+	sync.RWMutex
 }{m: make(map[string]error)}
+
+// var fetchedSync = sync.Map[string]error{}
 
 var errLoading = errors.New("url load in progress")
 
@@ -31,42 +33,53 @@ func Crawl(url string, depth int, fetcher Fetcher) {
 		fmt.Printf("<- Done with %v, reached depth 0.\n", url)
 		return
 	}
-	fetched.Lock()
+	// Start reading
+	fetched.RLock()
 	if _, ok := fetched.m[url]; ok {
-		fetched.Unlock()
+		fetched.RUnlock()
 		fmt.Printf("<- Done with %v, already fetched.\n", url)
 		return
 	}
+	fetched.RUnlock()
+
+	// Start writing
 	// Mark for loading
+	fetched.Lock()
 	fetched.m[url] = errLoading
 	fetched.Unlock()
+	// End of "transaction"
 
 	// Fetch stuff
 	body, urls, err := fetcher.Fetch(url)
 
 	// Update status
 	fetched.Lock()
-	fetched.m[url] = err
+	fetched.m[url] = err // not loading anymore (nil or a "real" error)
 	fetched.Unlock()
 
 	if err != nil {
 		fmt.Printf("<- Error on %v: %v\n", url, err)
 		return
 	}
+
 	fmt.Printf("Found: %s %q\n", url, body)
 
+	// every Crawl goroutine call has it's own done chan
 	done := make(chan bool)
 
+	// start the goroutines for every sub-url found under the current url
 	for i, u := range urls {
 		fmt.Printf("-> Crawling child %v/%v of %v : %v.\n", i+1, len(urls), url, u)
 		go func(url string) {
+			// Recursion here
 			Crawl(url, depth-1, fetcher)
-			done <- true
-		}(u)
+			done <- true // signal goroutine is done
+		}(u) // <= url
 	}
+	// synchronize/wait for the goroutines to finish
 	for i, u := range urls {
 		fmt.Printf("<- [%v] %v/%v waiting for child %v.\n", url, i+1, len(urls), u)
-		<-done
+		<-done // block until all children are done
 	}
 	fmt.Printf("<- Done with %v\n", url)
 }
@@ -92,7 +105,7 @@ type fakeResult struct {
 }
 
 func (f fakeFetcher) Fetch(url string) (string, []string, error) {
-	// comma, ok idiom to identify missing values (discriminate them from just zero-values)
+	// comma, ok idiom to identify missing values (discriminate them from zero-values)
 	if res, ok := f[url]; ok {
 		return res.body, res.urls, nil
 	}
