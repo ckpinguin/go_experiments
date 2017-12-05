@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	"sync"
 	"time"
 )
 
@@ -15,20 +16,33 @@ func init() {
 }
 
 func fetcher(url string) <-chan string {
-	ch := make(chan string)
-	fmt.Println("Running goroutine for", url, "with chan", ch)
+	out := make(chan string)
+	fmt.Println("Running goroutine for", url, "with chan", out)
 	go func() {
-		ch <- "hey " + url
+		defer wgRec.Done()
+		time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+		out <- "hey " + url
+		close(out)
 	}()
-	return ch
+	return out
 }
 
+// See http://www.tapirgames.com/blog/golang-channel-closing:
+// ...don't close a channel if the channel has multiple concurrent senders
+// so we need to use a waitgroup for this, there is no solid way to
+// use chans only
 func fanIn(channels []<-chan string) <-chan string {
+	var wgRec sync.WaitGroup
 	broadcast := make(chan string)
+	// The issue here is, that we do not know, which is the last sending
+	// goroutine, so we cannot safely close the broadcast chan.
 	go func() {
 		for {
 			for i := range channels {
 				c := channels[i]
+				// The first select here is to try to exit the goroutine
+				// as early as possible. In fact, it is not essential
+				// for this example, so it can be omitted.
 				select {
 				case s := <-c:
 					broadcast <- s
@@ -43,20 +57,28 @@ func fanIn(channels []<-chan string) <-chan string {
 func main() {
 	urls := []string{"urlone", "urltwo", "urlthree"}
 	channels := []<-chan string{}
-	totalTimeout := time.After(2 * time.Second)
+	stop := make(chan struct{})
+	totalTimeout := time.After(1 * time.Second)
 
 	for _, url := range urls {
 		fmt.Println("Starting goroutine for", url)
-		channels = append(channels, fetcher(url))
+		ch := fetcher(url)
+		channels = append(channels, ch)
 	}
-	r := fanIn(channels)
+	r := fanIn(channels, stop)
+
 	for {
 		select {
 		case s := <-r:
 			println(s)
-		case <-totalTimeout:
+			// stop <- struct{}{}
+		case <-totalTimeout: // signaling usage of a channel
 			println("Timed out")
-			return
+			stop <- struct{}{}
+			close(stop)
 		}
 	}
+
+	// wgRec.Wait()
+
 }

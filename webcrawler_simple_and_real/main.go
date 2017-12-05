@@ -13,6 +13,7 @@ import (
 	"golang.org/x/net/html"
 )
 
+// bookkeeping of loaded urls
 var fetched = struct {
 	m map[string]error
 	sync.RWMutex
