@@ -7,10 +7,6 @@ import (
 	"time"
 )
 
-var println = fmt.Println
-var sprintf = fmt.Sprintf
-var printf = fmt.Printf
-
 func init() {
 	rand.Seed(time.Now().UTC().UnixNano())
 }
@@ -19,8 +15,7 @@ func fetcher(url string) <-chan string {
 	out := make(chan string)
 	fmt.Println("Running goroutine for", url, "with chan", out)
 	go func() {
-		defer wgRec.Done()
-		time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(1000)) * time.Millisecond)
 		out <- "hey " + url
 		close(out)
 	}()
@@ -31,54 +26,54 @@ func fetcher(url string) <-chan string {
 // ...don't close a channel if the channel has multiple concurrent senders
 // so we need to use a waitgroup for this, there is no solid way to
 // use chans only
-func fanIn(channels []<-chan string) <-chan string {
-	var wgRec sync.WaitGroup
-	broadcast := make(chan string)
-	// The issue here is, that we do not know, which is the last sending
-	// goroutine, so we cannot safely close the broadcast chan.
-	go func() {
-		for {
-			for i := range channels {
-				c := channels[i]
-				// The first select here is to try to exit the goroutine
-				// as early as possible. In fact, it is not essential
-				// for this example, so it can be omitted.
-				select {
-				case s := <-c:
-					broadcast <- s
-				default:
-				}
-			}
+func fanIn(cs []<-chan string) <-chan string {
+	var wg sync.WaitGroup
+	out := make(chan string)
+
+	output := func(c <-chan string) {
+		for s := range c {
+			out <- s
 		}
+		wg.Done()
+	}
+
+	wg.Add(len(cs))
+	for _, c := range cs {
+		go output(c)
+	}
+
+	// Start a goroutine to close out once all the output goroutines are
+	// done.  This must start after the wg.Add call.
+	go func() {
+		wg.Wait()
+		close(out)
 	}()
-	return broadcast
+	return out
 }
 
 func main() {
 	urls := []string{"urlone", "urltwo", "urlthree"}
 	channels := []<-chan string{}
-	stop := make(chan struct{})
-	totalTimeout := time.After(1 * time.Second)
 
 	for _, url := range urls {
 		fmt.Println("Starting goroutine for", url)
 		ch := fetcher(url)
 		channels = append(channels, ch)
 	}
-	r := fanIn(channels, stop)
+	r := fanIn(channels)
 
+	totalTimeout := time.After(5 * time.Second)
+loop:
 	for {
 		select {
-		case s := <-r:
-			println(s)
-			// stop <- struct{}{}
+		case s, ok := <-r:
+			if !ok {
+				break loop
+			}
+			fmt.Println(s)
 		case <-totalTimeout: // signaling usage of a channel
-			println("Timed out")
-			stop <- struct{}{}
-			close(stop)
+			fmt.Println("Timed out")
+			break loop
 		}
 	}
-
-	// wgRec.Wait()
-
 }
