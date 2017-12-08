@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -46,14 +47,14 @@ func fanIn(cs []<-chan string) <-chan string {
 	return out
 }
 
-func fetcher(url string) <-chan string {
+func fetcher(URL string) <-chan string {
 	out := make(chan string)
 	// do this async
 	go func() {
 		fetched.RLock()
-		if _, ok := fetched.m[url]; ok {
+		if _, ok := fetched.m[URL]; ok {
 			fetched.RUnlock()
-			fmt.Printf("<- Done with %v, already fetched.\n", url)
+			fmt.Printf("<- Done with %v, already fetched.\n", URL)
 			return
 		}
 		fetched.RUnlock()
@@ -61,12 +62,11 @@ func fetcher(url string) <-chan string {
 		// Start writing
 		// Mark for loading
 		fetched.Lock()
-		fetched.m[url] = errLoading
+		fetched.m[URL] = errLoading
 		fetched.Unlock()
-		// End of "transaction"
-		resp, err := http.Get(url)
+		resp, err := http.Get(URL)
 		if err != nil {
-			log.Fatalln("ERROR: Could not read from", url, err)
+			log.Fatalln("ERROR: Could not read from", URL, err)
 		}
 		defer resp.Body.Close()
 		var s []byte
@@ -82,6 +82,14 @@ func fetcher(url string) <-chan string {
 						fmt.Println(a.Val)
 						hasProto := strings.Index(a.Val, "http") == 0
 						if hasProto {
+							u, err := url.Parse(a.Val)
+							if err != nil {
+								log.Fatal(err)
+							}
+							fetched.Lock()
+							fetched.m[u.Scheme+"://"+u.Hostname()] = nil
+							fetched.Unlock()
+							// End of "transaction"
 							out <- a.Val
 						}
 						break // break after the first (hopefully only) href
@@ -103,9 +111,14 @@ func main() {
 	urls := os.Args[1:]
 	channels := []<-chan string{}
 
-	for _, url := range urls {
-		fmt.Println("Starting goroutine for", url)
-		ch := fetcher(url)
+	for _, u := range urls {
+		fmt.Println("Starting goroutine for", u)
+		up, err := url.Parse(u)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		ch := fetcher(up.Scheme + "://" + up.Hostname())
 		channels = append(channels, ch)
 	}
 	r := fanIn(channels)
