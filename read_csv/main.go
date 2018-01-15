@@ -29,6 +29,7 @@ func main() {
 			break
 			// We must ignore all other errors, when we have lines with
 			// different numbers of record fields
+			// If i holds a T, then t will be the underlying value and ok will be true.
 		} else if err, ok := err.(*csv.ParseError); ok {
 			if err.Err == csv.ErrFieldCount {
 				log.Println(record)
